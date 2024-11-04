@@ -76,6 +76,11 @@ class AutoTyperGUI:
         self.stop_btn = ttk.Button(btn_frame, text=f"Emergency Stop ({self.emergency_key.get()})", 
                                  command=self.emergency_stop)
         self.stop_btn.pack(side=tk.LEFT, padx=5)
+
+        # Delete button
+        self.delete_btn = ttk.Button(btn_frame, text="Delete Text", 
+                                   command=self.clear_text)
+        self.delete_btn.pack(side=tk.LEFT, padx=5)
         
         # Progress bar
         self.progress_var = tk.DoubleVar(value=0)
@@ -89,6 +94,11 @@ class AutoTyperGUI:
         
         # Set up hotkeys
         self.bind_hotkeys()
+
+    def clear_text(self):
+        """Clear all text from the text area."""
+        self.text_area.delete("1.0", tk.END)
+        self.status_var.set("Text cleared")
 
     def bind_hotkeys(self):
         try:

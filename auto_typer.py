@@ -5,10 +5,13 @@ from typing import Optional, Callable
 import pyautogui
 import keyboard
 from datetime import datetime, time as dt_time
+from contextlib import contextmanager
+import queue
+import itertools
 
 class AutoTyper:
     def __init__(self):
-        """Initialize the AutoTyper with default settings."""
+        """Initialize the AutoTyper with optimized settings."""
         self.running = False
         self.paused = False
         self.thread: Optional[threading.Thread] = None
@@ -16,152 +19,163 @@ class AutoTyper:
         self.wpm = 60
         self.random_delay = {
             "enabled": False,
-            "min": 100,  # 100 milliseconds
-            "max": 1000  # 1000 milliseconds
+            "min": 100,
+            "max": 1000
         }
         self.interval = 0.0
         self.scheduled_time: Optional[dt_time] = None
-        self.status_callback: Optional[Callable[[str], None]] = None
-        self.progress_callback: Optional[Callable[[int, int], None]] = None
+        self._status_callback: Optional[Callable[[str], None]] = None
+        self._progress_callback: Optional[Callable[[int, int], None]] = None
+        self.typing_queue = queue.Queue()
         
-        # Set PyAutoGUI settings
+        # Optimize PyAutoGUI settings
         pyautogui.FAILSAFE = True
-        pyautogui.PAUSE = 0.001
-
-    def set_text(self, text: str) -> None:
-        """Set the text to be typed."""
-        self.text = text
-
-    def set_wpm(self, wpm: int) -> None:
-        """Set typing speed in words per minute."""
-        self.wpm = max(1, min(wpm, 1000))  # Limit WPM between 1 and 1000
-
-    def set_random_delay(self, enabled: bool, min_delay: float, max_delay: float) -> None:
-        """
-        Set random delay settings.
-        min_delay and max_delay are in milliseconds
-        """
-        self.random_delay = {
-            "enabled": enabled,
-            "min": max(0.0, min_delay) / 1000.0,  # Convert to seconds
-            "max": max(min_delay, max_delay) / 1000.0  # Convert to seconds
+        pyautogui.PAUSE = 0.0
+        
+        # Natural typing patterns
+        self.typing_patterns = {
+            'common_pairs': {'th': 0.9, 'he': 0.9, 'in': 0.9, 'er': 0.9},
+            'end_sentence': {'.': 1.2, '!': 1.2, '?': 1.2},
+            'punctuation': {',': 1.1, ';': 1.1, ':': 1.1}
         }
-
-    def set_interval(self, interval: float) -> None:
-        """Set interval between typing sessions."""
-        self.interval = max(0.0, interval)
-
-    def set_scheduled_time(self, scheduled_time: Optional[dt_time]) -> None:
-        """Set scheduled start time."""
-        self.scheduled_time = scheduled_time
 
     def set_status_callback(self, callback: Callable[[str], None]) -> None:
         """Set callback for status updates."""
-        self.status_callback = callback
+        self._status_callback = callback
 
     def set_progress_callback(self, callback: Callable[[int, int], None]) -> None:
         """Set callback for progress updates."""
-        self.progress_callback = callback
+        self._progress_callback = callback
+
+    def cleanup(self):
+        """Clean up resources safely."""
+        self.running = False
+        self.paused = False
+        while not self.typing_queue.empty():
+            try:
+                self.typing_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def set_text(self, text: str) -> None:
+        """Set the text to be typed with preprocessing."""
+        self.text = text
+        self._prepare_typing_queue()
+
+    def _prepare_typing_queue(self):
+        """Pre-process text into optimized typing chunks."""
+        while not self.typing_queue.empty():
+            self.typing_queue.get_nowait()
+        
+        chunk_size = 10
+        chunks = [''.join(chunk) for chunk in itertools.zip_longest(*[iter(self.text)]*chunk_size, fillvalue='')]
+        for chunk in chunks:
+            self.typing_queue.put(chunk)
+
+    def set_wpm(self, wpm: int) -> None:
+        """Set typing speed in words per minute with validation."""
+        self.wpm = max(1, min(wpm, 1000))
+
+    def set_random_delay(self, enabled: bool, min_delay: float, max_delay: float) -> None:
+        """Set random delay settings with validation."""
+        min_delay = max(0.0, min_delay)
+        max_delay = max(min_delay, max_delay)
+        self.random_delay = {
+            "enabled": enabled,
+            "min": min_delay / 1000.0,
+            "max": max_delay / 1000.0
+        }
+
+    def calculate_delay(self, current_char: str, next_char: Optional[str] = None) -> float:
+        """Calculate intelligent delay between keystrokes."""
+        base_delay = 60.0 / (self.wpm * 5)  # Base delay from WPM
+        
+        # Apply natural typing patterns
+        if next_char and current_char + next_char in self.typing_patterns['common_pairs']:
+            base_delay *= self.typing_patterns['common_pairs'][current_char + next_char]
+        elif current_char in self.typing_patterns['end_sentence']:
+            base_delay *= self.typing_patterns['end_sentence'][current_char]
+        elif current_char in self.typing_patterns['punctuation']:
+            base_delay *= self.typing_patterns['punctuation'][current_char]
+        
+        # Add randomness if enabled
+        if self.random_delay["enabled"]:
+            variance = random.uniform(self.random_delay["min"], self.random_delay["max"])
+            base_delay += variance
+        
+        return base_delay
 
     def update_status(self, status: str) -> None:
-        """Update status through callback if set."""
-        if self.status_callback:
-            self.status_callback(status)
+        """Thread-safe status update."""
+        if self._status_callback:
+            self._status_callback(status)
 
     def update_progress(self, current: int, total: int) -> None:
-        """Update progress through callback if set."""
-        if self.progress_callback:
-            self.progress_callback(current, total)
-
-    def calculate_delay(self) -> float:
-        """Calculate delay between keystrokes based on WPM."""
-        # Average word length is 5 characters
-        cpm = self.wpm * 5
-        return 60.0 / cpm
-
-    def wait_for_scheduled_time(self) -> None:
-        """Wait until scheduled time if set."""
-        if self.scheduled_time:
-            now = datetime.now().time()
-            if now < self.scheduled_time:
-                self.update_status("Waiting for scheduled time...")
-                while datetime.now().time() < self.scheduled_time and self.running:
-                    time.sleep(0.1)
+        """Thread-safe progress update."""
+        if self._progress_callback:
+            self._progress_callback(current, total)
 
     def type_text(self) -> None:
-        """Main typing function."""
+        """Optimized typing function with better performance."""
         try:
-            # Wait 3 seconds before starting
-            self.update_status("Starting in 3 seconds...")
-            for i in range(3, 0, -1):
-                if not self.running:
-                    return
-                self.update_status(f"Starting in {i} seconds...")
-                time.sleep(1)
+            self._countdown_start()
+            
+            total_chars = len(self.text)
+            chars_typed = 0
+            
+            while self.running and not self.typing_queue.empty():
+                if self.paused:
+                    time.sleep(0.1)
+                    continue
 
-            while self.running:
-                self.wait_for_scheduled_time()
+                chunk = self.typing_queue.get()
+                pyautogui.write(chunk)  # Batch typing for better performance
                 
-                if not self.running:
-                    break
-
-                self.update_status("Typing in progress...")
-                base_delay = self.calculate_delay()
+                chars_typed += len(chunk)
+                self.update_progress(chars_typed, total_chars)
                 
-                for i, char in enumerate(self.text):
-                    while self.paused:
-                        if not self.running:
-                            return
-                        time.sleep(0.1)
-                    
-                    if not self.running:
-                        break
-
-                    pyautogui.write(char)
-                    
-                    # Calculate and apply delay
-                    if self.random_delay["enabled"]:
-                        delay = random.uniform(
-                            self.random_delay["min"],
-                            self.random_delay["max"]
-                        )
-                    else:
-                        delay = base_delay
-                    
-                    time.sleep(delay)
-                    self.update_progress(i + 1, len(self.text))
-
-                if self.interval <= 0:
-                    break
+                # Calculate delay after chunk
+                delay = self.calculate_delay(chunk[-1], 
+                                          self.text[chars_typed] if chars_typed < total_chars else None)
+                time.sleep(delay)
                 
-                self.update_status(f"Waiting {self.interval} seconds before next iteration...")
-                time.sleep(self.interval)
+                if self.interval > 0 and self.typing_queue.empty():
+                    self.update_status(f"Waiting {self.interval} seconds...")
+                    time.sleep(self.interval)
+                    self._prepare_typing_queue()  # Prepare for next iteration
 
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
         finally:
-            self.running = False
-            self.update_status("Stopped")
+            self.cleanup()
+            self.update_status("Completed" if chars_typed >= total_chars else "Stopped")
+
+    def _countdown_start(self):
+        """Handle countdown with status updates."""
+        for i in range(3, 0, -1):
+            if not self.running:
+                return
+            self.update_status(f"Starting in {i} seconds...")
+            time.sleep(1)
 
     def start(self) -> None:
-        """Start the typing process in a new thread."""
+        """Start typing with proper thread management."""
         if not self.running and self.text:
             self.running = True
             self.paused = False
+            self._prepare_typing_queue()
             self.thread = threading.Thread(target=self.type_text)
             self.thread.daemon = True
             self.thread.start()
 
     def stop(self) -> None:
-        """Stop the typing process."""
+        """Stop typing with proper cleanup."""
         self.running = False
         self.paused = False
-        if self.thread:
-            self.thread.join(timeout=1.0)
         self.update_status("Stopped")
 
     def toggle_pause(self) -> None:
-        """Toggle pause state."""
+        """Toggle pause state with status update."""
         if self.running:
             self.paused = not self.paused
             self.update_status("Paused" if self.paused else "Resumed")
