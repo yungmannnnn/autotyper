@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import ttk, scrolledtext, messagebox, font
 import keyboard
 from datetime import time
 from config import load_settings, save_settings
@@ -9,6 +9,9 @@ class AutoTyperGUI:
         self.root = root
         self.root.title("Auto Typer")
         self.root.minsize(600, 400)
+        
+        # Configure Thai font
+        self.text_font = ('Cordia New', 16)  # Explicitly use Cordia New for Thai support
         
         self.settings = load_settings()
         self.auto_typer = None  # Will be initialized later
@@ -22,7 +25,8 @@ class AutoTyperGUI:
         text_frame = ttk.LabelFrame(main_frame, text="Text Input", padding="5")
         text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.text_area = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD, height=10)
+        self.text_area = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD, height=10, 
+                                                 font=self.text_font)  # Use Cordia New font
         self.text_area.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Control panel

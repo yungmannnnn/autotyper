@@ -2,19 +2,23 @@ import threading
 import time
 import random
 from typing import Optional, Callable
-import pyautogui
 import keyboard
 from datetime import datetime, time as dt_time
 from contextlib import contextmanager
 import queue
 import itertools
+import win32api
+import win32con
+import win32gui
+import win32clipboard
 
 class AutoTyper:
     def __init__(self):
         """Initialize the AutoTyper with optimized settings."""
+        # Initialize all instance variables
         self.running = False
         self.paused = False
-        self.thread: Optional[threading.Thread] = None
+        self.thread = None
         self.text = ""
         self.wpm = 60
         self.random_delay = {
@@ -23,21 +27,18 @@ class AutoTyper:
             "max": 1000
         }
         self.interval = 0.0
-        self.scheduled_time: Optional[dt_time] = None
-        self._status_callback: Optional[Callable[[str], None]] = None
-        self._progress_callback: Optional[Callable[[int, int], None]] = None
+        self.scheduled_time = None
+        self._status_callback = None
+        self._progress_callback = None
         self.typing_queue = queue.Queue()
         
-        # Optimize PyAutoGUI settings
-        pyautogui.FAILSAFE = True
-        pyautogui.PAUSE = 0.0
-        
-        # Natural typing patterns
-        self.typing_patterns = {
-            'common_pairs': {'th': 0.9, 'he': 0.9, 'in': 0.9, 'er': 0.9},
-            'end_sentence': {'.': 1.2, '!': 1.2, '?': 1.2},
-            'punctuation': {',': 1.1, ';': 1.1, ':': 1.1}
-        }
+        # Store original clipboard content
+        try:
+            win32clipboard.OpenClipboard()
+            self.original_clipboard = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT) if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT) else ""
+            win32clipboard.CloseClipboard()
+        except:
+            self.original_clipboard = ""
 
     def set_status_callback(self, callback: Callable[[str], None]) -> None:
         """Set callback for status updates."""
@@ -56,6 +57,12 @@ class AutoTyper:
                 self.typing_queue.get_nowait()
             except queue.Empty:
                 break
+        
+        # Restore original clipboard content
+        try:
+            self.set_clipboard(self.original_clipboard)
+        except:
+            pass
 
     def set_text(self, text: str) -> None:
         """Set the text to be typed with preprocessing."""
@@ -63,14 +70,13 @@ class AutoTyper:
         self._prepare_typing_queue()
 
     def _prepare_typing_queue(self):
-        """Pre-process text into optimized typing chunks."""
+        """Pre-process text into typing chunks."""
         while not self.typing_queue.empty():
             self.typing_queue.get_nowait()
         
-        chunk_size = 10
-        chunks = [''.join(chunk) for chunk in itertools.zip_longest(*[iter(self.text)]*chunk_size, fillvalue='')]
-        for chunk in chunks:
-            self.typing_queue.put(chunk)
+        # Process text character by character
+        for char in self.text:
+            self.typing_queue.put(char)
 
     def set_wpm(self, wpm: int) -> None:
         """Set typing speed in words per minute with validation."""
@@ -86,17 +92,9 @@ class AutoTyper:
             "max": max_delay / 1000.0
         }
 
-    def calculate_delay(self, current_char: str, next_char: Optional[str] = None) -> float:
-        """Calculate intelligent delay between keystrokes."""
+    def calculate_delay(self) -> float:
+        """Calculate delay between keystrokes."""
         base_delay = 60.0 / (self.wpm * 5)  # Base delay from WPM
-        
-        # Apply natural typing patterns
-        if next_char and current_char + next_char in self.typing_patterns['common_pairs']:
-            base_delay *= self.typing_patterns['common_pairs'][current_char + next_char]
-        elif current_char in self.typing_patterns['end_sentence']:
-            base_delay *= self.typing_patterns['end_sentence'][current_char]
-        elif current_char in self.typing_patterns['punctuation']:
-            base_delay *= self.typing_patterns['punctuation'][current_char]
         
         # Add randomness if enabled
         if self.random_delay["enabled"]:
@@ -115,8 +113,17 @@ class AutoTyper:
         if self._progress_callback:
             self._progress_callback(current, total)
 
+    def set_clipboard(self, text: str) -> None:
+        """Set text to clipboard with UTF-16 encoding for Thai support."""
+        try:
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+        finally:
+            win32clipboard.CloseClipboard()
+
     def type_text(self) -> None:
-        """Optimized typing function with better performance."""
+        """Type text using clipboard for Thai support."""
         try:
             self._countdown_start()
             
@@ -128,21 +135,26 @@ class AutoTyper:
                     time.sleep(0.1)
                     continue
 
-                chunk = self.typing_queue.get()
-                pyautogui.write(chunk)  # Batch typing for better performance
+                char = self.typing_queue.get()
                 
-                chars_typed += len(chunk)
+                # Handle spaces and Thai characters differently
+                if char == ' ':
+                    keyboard.press_and_release('space')
+                else:
+                    # Use clipboard for Thai characters
+                    self.set_clipboard(char)
+                    keyboard.press_and_release('ctrl+v')
+                
+                chars_typed += 1
                 self.update_progress(chars_typed, total_chars)
                 
-                # Calculate delay after chunk
-                delay = self.calculate_delay(chunk[-1], 
-                                          self.text[chars_typed] if chars_typed < total_chars else None)
+                delay = self.calculate_delay()
                 time.sleep(delay)
                 
                 if self.interval > 0 and self.typing_queue.empty():
                     self.update_status(f"Waiting {self.interval} seconds...")
                     time.sleep(self.interval)
-                    self._prepare_typing_queue()  # Prepare for next iteration
+                    self._prepare_typing_queue()
 
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
